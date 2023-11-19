@@ -4,7 +4,7 @@ This is a very simple local file cloner for making duplications from one drive o
 It is 'constructive only' meaning that deletions do not propogate only mutations and creations.
 Deleting a file that is mirrored will not delete it on the mirror locations
 
-Presently configuration is done by making a `$XDG_CONFIG_PATH/reflector/config` file each line of the file is a mirror source and location.
+Presently configuration is done by making a `~/.config/reflector/config` or `$XDG_CONFIG_PATH/reflector/config` file each line of the file is a mirror source and location.
 An example config is as simple as:
 ```
 /home/jason/->/mnt/otherdrive/home
