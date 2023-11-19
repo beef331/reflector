@@ -255,13 +255,10 @@ proc main(): Future[void] {.async.} =
   var 
     buffer = newString(sizeof(InotifyEvent) + pathMax + 1)
     movedFromBuffer: Table[uint32, (Path, Path)] # (Parent, Name)
-    cloneFut: Future[void]
 
   info("Done syncing directories")
   while true:
     try:
-      if cloneFut != nil:
-        await cloneFut
       let len = await watcherfile.readBuffer(buffer[0].addr, buffer.len)
       var pos = 0
       while pos < len:
@@ -300,11 +297,7 @@ proc main(): Future[void] {.async.} =
               let
                 src = srcPath / fileName
                 dest = destPath / fileName
-              cloneFut = 
-                if cloneFut == nil:
-                  clone(src, dest, getLastModificationTime(string src), true)
-                else:
-                  cloneFut or clone(src, dest, getLastModificationTime(string src), true)
+              await clone(src, dest, getLastModificationTime(string src), true)
 
           elif event.mask in [{Attrib}]:
             info fmt"Skipping {event.mask} unimplemented but not errory"
