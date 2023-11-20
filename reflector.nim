@@ -26,17 +26,26 @@ type Unimplemented = object of CatchableError
 addHandler newConsoleLogger()
 addHandler newFileLogger(string (getCacheDir() / Path"reflector"))
 
-template error(s: string) =
+proc error(s: string) =
   try:
     logging.error(s)
   except Exception as e:
     echo "Fail to log ERROR: ", e.msg
 
-template info(s: string) =
+proc info(s: string) =
   try:
     logging.info(s)
   except Exception as e:
     echo "Fail to log INFO: ", e.msg
+
+proc fatal(s: string) =
+  try:
+    logging.fatal(s)
+    try:
+      discard execShellCmd(fmt"notify-send -c critical 'Reflector: {s}'")
+    except: discard
+  except Exception as e:
+    echo "Failed to log FATAL: ", e.msg
 
 
 template unimplemented(s: string): untyped =
@@ -220,7 +229,7 @@ proc main(): Future[void] {.async.} =
 
   let watcherFd = inotify_init1(0)
   if watcherFd < 0:
-    error("Failed to intialize inotify: " & osErrorMsg(osLastError()))
+    fatal "Failed to intialize inotify: " & osErrorMsg(osLastError())
     return
   
   loadConfig(watcherFd, configWatchers, watchesToMirror, mirrors, futures)
@@ -241,7 +250,7 @@ proc main(): Future[void] {.async.} =
     try:
       newAsyncFile(AsyncFd watcherFd)
     except CatchableError as e:
-      error("Could not open inotify file: " & e.msg)
+      fatal "Could not open inotify file: " & e.msg
       return
 
   let startMirrors = mirrors.keys.toSeq
@@ -249,7 +258,7 @@ proc main(): Future[void] {.async.} =
     try:
       watcherFd.createWatcherRecursively(mirror, watchesToMirror, mirrors, Path"")
     except Exception as e:
-      error("Failed to recursively add watchers for '" & string(mirror) & "': " & e.msg)
+      fatal "Failed to recursively add watchers for '" & string(mirror) & "': " & e.msg
       return
 
   var 
@@ -267,7 +276,7 @@ proc main(): Future[void] {.async.} =
           info "Reloading config"
           loadConfig(watcherFd, configWatchers, watchesToMirror, mirrors, futures)
 
-        else:
+        elif event.wd in watchesToMirror:
           let src = watchesToMirror[event.wd]
 
           if event.mask in [{MovedFrom}, {MovedFrom, IsDir}]:
@@ -308,7 +317,7 @@ proc main(): Future[void] {.async.} =
         pos += sizeof(InotifyEvent) + int event.len
       
     except Exception as e:
-      error("Failed to read: " & e.msg)
+      fatal "Failed to read: " & e.msg
       break
 
 try:
