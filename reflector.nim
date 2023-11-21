@@ -220,7 +220,13 @@ when isMainModule:
         let
           src = src / fileName
           dest = destPath / fileName
-        await clone(src, dest, getLastModificationTime(string src), true)
+        if IsDir in event.mask:
+          clone(src, dest, refl.futures)
+          if refl.futures.len > 0:
+            await all refl.futures
+            refl.futures.setLen(0)
+        else:
+          await clone(src, dest, getLastModificationTime(string src), true)
 
     reflectObj.route {Attrib}, {Attrib, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, _: Path){.async.} =
       info fmt"Skipping {event.mask} unimplemented but not errory"
