@@ -117,7 +117,10 @@ proc clone*(src, dest: Path, srcModifcation: Time, creating: bool = false): Futu
 proc clone*(src, dest: Path, futures: var seq[Future[void]]) = # So many TOCTOU race conditions
   if dirExists(src) and not dirExists(dest): # No Future required here
     info fmt"Copying from '{src}' to '{dest}'."
-    copyDir(string src, string dest)
+    if fileExists(dest):
+      fatal fmt"Cannot copy folder to {dest} a file exists there. Delete it and restart reflector"
+    else:
+      copyDir(string src, string dest)
   elif dirExists(src) and dirExists(dest):
     for dir in walkDir(src, relative = true):
       clone(src / dir.path, dest / dir.path, futures)
@@ -185,51 +188,8 @@ proc dispatch*(reflectorObj: Reflector, event: ptr InotifyEvent) {.async.} =
   else:
     unimplemented fmt" no handler for {event.mask} operating on '{event.wd}'"
 
-when isMainModule:
-  addHandler newConsoleLogger()
-  addHandler newFileLogger(string (getCacheDir() / Path"reflector"))
-
-  proc main(): Future[void] {.async.} =
-    var reflectObj = Reflector(watcher: inotify_init1(0))
-
-    reflectObj.route {MovedFrom}, {MovedFrom, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} = 
-      if event.cookie != 0:
-        refl.movedFromBuffer[event.cookie] = (src, Path event.getName())
-
-    reflectObj.route {MovedTo}, {MovedTo, IsDir}, proc (refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
-      if event.cookie != 0:
-        let 
-          moveFrom = refl.mirrors[refl.movedFromBuffer[event.cookie][0]]
-          moveTo = refl.mirrors[src]
-          srcFileName = refl.movedFromBuffer[event.cookie][1]
-        assert moveFrom.len == moveTo.len
-        for (frm, to) in slicerator.zip(moveFrom.items, moveTo.items):
-          let
-            src = frm / srcFileName
-            dest = to / Path event.getName()
-          info fmt"Moving '{src}' to '{dest}'"
-          moveFile(src, dest)
-        refl.movedFromBuffer.del event.cookie
-      else:
-        unimplemented fmt"Move to without from: {src}"
-
-    reflectObj.route {Create}, {Create, IsDir}, {Modify}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
-      let 
-        fileName = Path event.getName()
-      for destPath in refl.mirrors[refl.watchers[event.wd]]:
-        let
-          src = src / fileName
-          dest = destPath / fileName
-        if IsDir in event.mask:
-          clone(src, dest, refl.futures)
-          if refl.futures.len > 0:
-            await all refl.futures
-            refl.futures.setLen(0)
-        else:
-          await clone(src, dest, getLastModificationTime(string src), true)
-
-    reflectObj.route {Attrib}, {Attrib, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, _: Path){.async.} =
-      info fmt"Skipping {event.mask} unimplemented but not errory"
+proc loop*(reflectObj: Reflector) {.async.} =
+    reflectObj.watcher =inotify_init1(0)
 
     if reflectObj.watcher < 0:
       fatal "Failed to intialize inotify: " & osErrorMsg(osLastError())
@@ -282,7 +242,52 @@ when isMainModule:
         fatal "Failed to read: " & e.msg
         break
 
+when isMainModule:
+  addHandler newConsoleLogger()
+  addHandler newFileLogger(string (getCacheDir() / Path"reflector"))
+
+  var reflectObj = Reflector(watcher: inotify_init1(0))
+
+  reflectObj.route {MovedFrom}, {MovedFrom, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} = 
+    if event.cookie != 0:
+      refl.movedFromBuffer[event.cookie] = (src, Path event.getName())
+
+  reflectObj.route {MovedTo}, {MovedTo, IsDir}, proc (refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
+    if event.cookie != 0:
+      let 
+        moveFrom = refl.mirrors[refl.movedFromBuffer[event.cookie][0]]
+        moveTo = refl.mirrors[src]
+        srcFileName = refl.movedFromBuffer[event.cookie][1]
+      assert moveFrom.len == moveTo.len
+      for (frm, to) in slicerator.zip(moveFrom.items, moveTo.items):
+        let
+          src = frm / srcFileName
+          dest = to / Path event.getName()
+        info fmt"Moving '{src}' to '{dest}'"
+        moveFile(src, dest)
+      refl.movedFromBuffer.del event.cookie
+    else:
+      unimplemented fmt"Move to without from: {src}"
+
+  reflectObj.route {Create}, {Create, IsDir}, {Modify}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
+    let 
+      fileName = Path event.getName()
+    for destPath in refl.mirrors[refl.watchers[event.wd]]:
+      let
+        src = src / fileName
+        dest = destPath / fileName
+      if IsDir in event.mask:
+        clone(src, dest, refl.futures)
+        if refl.futures.len > 0:
+          await all refl.futures
+          refl.futures.setLen(0)
+      else:
+        await clone(src, dest, getLastModificationTime(string src), true)
+
+  reflectObj.route {Attrib}, {Attrib, IsDir}, {Ignored}, {Ignored, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, _: Path){.async.} =
+    info fmt"Skipping {event.mask} unimplemented but not errory"
+
   try:
-    waitfor main()
+    waitfor reflectObj.loop()
   except Exception as e:
     error e.msg
