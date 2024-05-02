@@ -246,32 +246,8 @@ when isMainModule:
   addHandler newConsoleLogger()
   addHandler newFileLogger(string (getCacheDir() / Path"reflector"))
 
-  var reflectObj = Reflector(watcher: inotify_init1(0))
-
-  reflectObj.route {MovedFrom}, {MovedFrom, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} = 
-    if event.cookie != 0:
-      refl.movedFromBuffer[event.cookie] = (src, Path event.getName())
-
-  reflectObj.route {MovedTo}, {MovedTo, IsDir}, proc (refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
-    if event.cookie != 0:
-      let 
-        moveFrom = refl.mirrors[refl.movedFromBuffer[event.cookie][0]]
-        moveTo = refl.mirrors[src]
-        srcFileName = refl.movedFromBuffer[event.cookie][1]
-      assert moveFrom.len == moveTo.len
-      for (frm, to) in slicerator.zip(moveFrom.items, moveTo.items):
-        let
-          src = frm / srcFileName
-          dest = to / Path event.getName()
-        info fmt"Moving '{src}' to '{dest}'"
-        moveFile(src, dest)
-      refl.movedFromBuffer.del event.cookie
-    else:
-      unimplemented fmt"Move to without from: {src}"
-
-  reflectObj.route {Create}, {Create, IsDir}, {Modify}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
-    let 
-      fileName = Path event.getName()
+  proc cloneFile(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
+    let fileName = Path event.getName()
     for destPath in refl.mirrors[refl.watchers[event.wd]]:
       let
         src = src / fileName
@@ -283,6 +259,38 @@ when isMainModule:
           refl.futures.setLen(0)
       else:
         await clone(src, dest, getLastModificationTime(string src), true)
+
+
+  var reflectObj = Reflector(watcher: inotify_init1(0))
+
+  reflectObj.route {MovedFrom}, {MovedFrom, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} = 
+    if event.cookie != 0:
+      refl.movedFromBuffer[event.cookie] = (src, Path event.getName())
+
+  reflectObj.route {MovedTo}, {MovedTo, IsDir}, proc (refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
+    if event.cookie != 0:
+      if event.cookie in refl.movedFromBuffer:
+        let 
+          moveFrom = refl.mirrors[refl.movedFromBuffer[event.cookie][0]]
+          moveTo = refl.mirrors[src]
+          srcFileName = refl.movedFromBuffer[event.cookie][1]
+        assert moveFrom.len == moveTo.len
+        for (frm, to) in slicerator.zip(moveFrom.items, moveTo.items):
+          let
+            src = frm / srcFileName
+            dest = to / Path event.getName()
+          info fmt"Moving '{src}' to '{dest}'"
+          moveFile(src, dest)
+        refl.movedFromBuffer.del event.cookie
+      else: # We got a partial move so we just copy the files over?
+        await refl.cloneFile(event, src)
+
+    else:
+      unimplemented fmt"Move to without from: {src}"
+
+  reflectObj.route {Create}, {Create, IsDir}, {Modify}, proc(refl: Reflector, event: ptr InotifyEvent, src: Path) {.async.} =
+    await refl.cloneFile(event, src)
+
 
   reflectObj.route {Attrib}, {Attrib, IsDir}, {Ignored}, {Ignored, IsDir}, proc(refl: Reflector, event: ptr InotifyEvent, _: Path){.async.} =
     info fmt"Skipping {event.mask} unimplemented but not errory"
